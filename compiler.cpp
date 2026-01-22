@@ -291,31 +291,218 @@ void CreatePrintfInt(Module *mod, BasicBlock *bb, Value *val) {
 // ---------------------------------------------------------------------------
 Value *ProgramAST::codegen(Function *F) {
   // STUDENTS: FILL IN THIS FUNCTION
+  for (auto &Stmt : Stmts) {
+    Stmt->codegen(F);
+  }
   return nullptr;
 }
 
 Value *AssignStmtAST::codegen(Function *F) {
   // STUDENTS: FILL IN THIS FUNCTION
-  return nullptr;
+  Value *rhs = RHS->codegen(F);
+  if (!rhs) {
+    return nullptr;
+  }
+
+  IRBuilder<> b(&F->getEntryBlock(),F->getEntryBlock().begin());
+  // WHY IS IT SO HARD TO FIND DOCS https://docs.hdoc.io/hdoc/llvm-project/rB252D65A795AFC3C.html
+  Value *val = b.CreateAlloca(rhs->getType(), nullptr);
+  NamedValues[GetName()] = val;
+
+  Builder.CreateStore(rhs, val);
+  return rhs;
 }
+
+void PrintNestedArray(Value* V, MiniAPLArrayType &type, int start_idx=0) {
+  int NDims = type.dimension();
+  CreatePrintfStr(TheModule.get(), Builder.GetInsertBlock(), "[");
+  if (NDims == 0) {
+    Value *element_ptr = Builder.CreateGEP(intTy(32), V, intConst(32, start_idx));
+    Value *val = Builder.CreateLoad(intTy(32), element_ptr);
+    CreatePrintfInt(TheModule.get(), Builder.GetInsertBlock(), val);
+  }
+  /*else if (NDims == 1) {
+    for (int i = 0; i < type.length(0); i++) {
+      Value *element_ptr = Builder.CreateGEP(intTy(32), V, intConst(32, i + start_idx));
+      Value *val = Builder.CreateLoad(intTy(32), element_ptr);
+      CreatePrintfStr(TheModule.get(), Builder.GetInsertBlock(), "[");
+      CreatePrintfInt(TheModule.get(), Builder.GetInsertBlock(), val);
+      CreatePrintfStr(TheModule.get(), Builder.GetInsertBlock(), "]");
+    }
+  }*/
+  else {
+    std::vector<int> new_dims(type.dimensions.begin() + 1, type.dimensions.end());
+    MiniAPLArrayType new_type = MiniAPLArrayType{new_dims};
+    int n = type.Cardinality();
+    int dim = type.length(0);
+    for (int i = 0; i < dim; i++) {
+      PrintNestedArray(V, new_type, start_idx + i*(n/dim));
+    }
+  }
+  CreatePrintfStr(TheModule.get(), Builder.GetInsertBlock(), "]");
+}
+
 
 Value *ExprStmtAST::codegen(Function *F) {
   // STUDENTS: FILL IN THIS FUNCTION
-  return nullptr;
+  Value *val = Val->codegen(F);
+  MiniAPLArrayType type = TypeTable[Val.get()];
+  PrintNestedArray(val, type);
+  CreatePrintfStr(TheModule.get(), Builder.GetInsertBlock(), "\n");
+  return val;
 }
 
 Value *NumberASTNode::codegen(Function *F) {
   // STUDENTS: FILL IN THIS FUNCTION
-  return nullptr;
+  return intConst(32, Val);
 }
 
 Value *VariableASTNode::codegen(Function *F) {
   // STUDENTS: FILL IN THIS FUNCTION
-  return nullptr;
+  Value* var = NamedValues[Name];
+  if (!var) {
+    return nullptr;
+  }
+  return Builder.CreateLoad(var->getType(), var, Name);
 }
 
 Value *CallASTNode::codegen(Function *F) {
   // STUDENTS: FILL IN THIS FUNCTION
+  if (Callee == "mkArray") {
+    int NDims = static_cast<NumberASTNode *>(Args.at(0).get())->Val;
+    std::vector<int> Dims;
+    for (int i = 0; i < NDims; i++) {
+      Dims.push_back(static_cast<NumberASTNode *>(Args.at(i + 1).get())->Val);
+    }
+    MiniAPLArrayType type = MiniAPLArrayType{Dims};
+    int n = type.Cardinality();
+
+    // think this needs to be in entry cuz we're allocating
+    IRBuilder<> b(&F->getEntryBlock(), F->getEntryBlock().begin());
+    Value *alloca = b.CreateAlloca(intTy(32), intConst(32, n));
+
+    int starting_elt_index = NDims + 1;
+    for (int i = 0; i < n; i++) {
+      Value *element_ptr = b.CreateGEP(intTy(32), alloca, intConst(32, i));
+      int val = static_cast<NumberASTNode*>(Args.at(starting_elt_index +  i).get())->Val;
+      b.CreateStore(intConst(32, val), element_ptr);
+    }
+
+    TypeTable[static_cast<ASTNode *>(this)] = type;
+    return alloca;
+  }
+  else if (Callee == "add" || Callee == "sub") {
+    ASTNode *a = Args.at(0).get();
+    ASTNode *b = Args.at(1).get();
+    if (!a || !b) {
+      return nullptr;
+    }
+    MiniAPLArrayType a_type = TypeTable[a];
+    MiniAPLArrayType b_type = TypeTable[b];
+    assert(a_type.dimension() == b_type.dimension());
+    for (int i = 0; i < a_type.dimension(); i++) {
+      assert(a_type.dimensions[i] == b_type.dimensions[i]);
+    }
+
+    IRBuilder<> alloca_builder(&F->getEntryBlock(), F->getEntryBlock().begin());
+    int n = a_type.Cardinality();
+    Value *alloca = alloca_builder.CreateAlloca(intTy(32), intConst(32, n));
+    Value* a_vals = a->codegen(F);
+    Value* b_vals = b->codegen(F);
+    for (int i = 0; i < n; i++) {
+      Value *element_ptr = Builder.CreateGEP(intTy(32), alloca, intConst(32, i));
+      Value *a_ptr = Builder.CreateGEP(intTy(32), a_vals, intConst(32, i));
+      Value *b_ptr = Builder.CreateGEP(intTy(32), b_vals, intConst(32, i));
+      Value *a_val = Builder.CreateLoad(intTy(32), a_ptr);
+      Value *b_val = Builder.CreateLoad(intTy(32), b_ptr);
+      Value *res;
+      if (Callee == "add") {
+        res = Builder.CreateAdd(a_val, b_val);
+      } else {
+        res = Builder.CreateSub(a_val, b_val);
+      }
+      Builder.CreateStore(res, element_ptr);
+    }
+
+    TypeTable[static_cast<ASTNode *>(this)] = a_type;
+    return alloca;
+  }
+  else if (Callee == "reduce"){
+    ASTNode* x =  Args.at(0).get();
+    if (!x) return nullptr;
+    MiniAPLArrayType type = TypeTable[x];
+    assert(type.dimension() > 0);
+    std::vector<int> new_dims(type.dimensions.begin() + 1, type.dimensions.end()); 
+    MiniAPLArrayType new_type = MiniAPLArrayType{new_dims};
+
+    IRBuilder<> alloca_builder(&F->getEntryBlock(), F->getEntryBlock().begin());
+    Value *alloca = alloca_builder.CreateAlloca(intTy(32), intConst(32, new_type.Cardinality()));
+
+    Value* vals = x->codegen(F);
+    std::vector<Value*> new_vals;
+    Value* computing = intConst(32, 0);
+    int n_allocated = 0;
+    for (int i = 0; i < type.Cardinality(); i++) {
+      Value *ptr = Builder.CreateGEP(intTy(32), vals, intConst(32, i));
+      Value* val = Builder.CreateLoad(intTy(32), ptr);
+      computing = Builder.CreateAdd(computing, val);
+      if ((i+1) % type.dimensions[type.dimension()-1] == 0) {
+        Value *element_ptr = Builder.CreateGEP(intTy(32), alloca, intConst(32, n_allocated));
+        n_allocated ++;
+        Builder.CreateStore(computing, element_ptr);
+        computing = intConst(32, 0);
+      }
+    }
+
+    TypeTable[static_cast<ASTNode *>(this)] = new_type;
+    return alloca;
+  }
+  else if (Callee == "exp") {
+    ASTNode* x =  Args.at(0).get();
+    int power = static_cast<NumberASTNode *>(Args.at(1).get())->Val;
+    if (!x  || !power) return nullptr;
+    MiniAPLArrayType type = TypeTable[x];
+
+    int n = type.Cardinality();
+    IRBuilder<> alloca_builder(&F->getEntryBlock(), F->getEntryBlock().begin());
+    Value *alloca = alloca_builder.CreateAlloca(intTy(32), intConst(32, n));
+
+    Value* vals = x->codegen(F);
+    for (int i = 0; i < n; i++) {
+      Value *element_ptr = Builder.CreateGEP(intTy(32), alloca, intConst(32, i)); 
+      Value *ptr = Builder.CreateGEP(intTy(32), vals, intConst(32, i));
+      Value* val = Builder.CreateLoad(intTy(32), ptr);
+      Value *res = intConst(32, 1);
+      for (int j = 0; j < power; j++) {
+        res = Builder.CreateMul(res, val);
+      }
+      Builder.CreateStore(res, element_ptr);
+    }
+
+    TypeTable[static_cast<ASTNode *>(this)] = type;
+    return alloca;
+  }
+  else if (Callee == "neg") {
+    ASTNode* x =  Args.at(0).get();
+    if (!x ) return nullptr;
+    MiniAPLArrayType type = TypeTable[x];
+
+    int n = type.Cardinality();
+    IRBuilder<> alloca_builder(&F->getEntryBlock(), F->getEntryBlock().begin());
+    Value *alloca = alloca_builder.CreateAlloca(intTy(32), intConst(32, n));
+
+    Value* vals = x->codegen(F);
+    for (int i = 0; i < n; i++) {
+      Value *element_ptr = Builder.CreateGEP(intTy(32), alloca, intConst(32, i)); 
+      Value *ptr = Builder.CreateGEP(intTy(32), vals, intConst(32, i));
+      Value* val = Builder.CreateLoad(intTy(32), ptr);
+      Value *res = Builder.CreateMul(intConst(32, -1), val);
+      Builder.CreateStore(res, element_ptr);
+    }
+
+    TypeTable[static_cast<ASTNode *>(this)] = type;
+    return alloca;
+  }
   return nullptr;
 }
 
