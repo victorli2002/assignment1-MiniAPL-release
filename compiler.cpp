@@ -503,6 +503,33 @@ Value *CallASTNode::codegen(Function *F) {
     TypeTable[static_cast<ASTNode *>(this)] = type;
     return alloca;
   }
+  else if (Callee == "expand") {
+    ASTNode* x =  Args.at(0).get();
+    int size = static_cast<NumberASTNode *>(Args.at(1).get())->Val;
+    if (!x  || !size) return nullptr;
+    MiniAPLArrayType type = TypeTable[x];
+    
+    int n = type.Cardinality();
+    IRBuilder<> alloca_builder(&F->getEntryBlock(), F->getEntryBlock().begin());
+    Value *alloca = alloca_builder.CreateAlloca(intTy(32), intConst(32, size*n));
+
+    Value* vals = x->codegen(F);
+    int new_idx = 0;
+    for (int i = 0; i < n; i++) {
+      Value *ptr = Builder.CreateGEP(intTy(32), vals, intConst(32, i));
+      Value* val = Builder.CreateLoad(intTy(32), ptr);
+      for (int j = 0; j < size; j++) {
+        Value *element_ptr = Builder.CreateGEP(intTy(32), alloca, intConst(32, i*size+j));
+        Builder.CreateStore(val, element_ptr);
+      }
+    }
+
+    std::vector<int> new_dims = type.dimensions;
+    new_dims.push_back(size); 
+
+    TypeTable[static_cast<ASTNode *>(this)] = MiniAPLArrayType{new_dims};
+    return alloca;
+  }
   return nullptr;
 }
 
@@ -608,6 +635,9 @@ void SetType(std::map<ASTNode *, MiniAPLArrayType> &Types, ASTNode *Expr) {
       Types[Expr].dimensions.pop_back();
     } else if (Call->Callee == "add" || Call->Callee == "sub") {
       Types[Expr] = Types[Call->Args.at(0).get()];
+    } else if (Call->Callee == "expand") {
+      Types[Expr] = Types[Call->Args.at(0).get()];
+      Types[Expr].dimensions.push_back(static_cast<NumberASTNode *>(Call->Args.at(1).get())->Val);
     } else {
       Types[Expr] = Types[Call->Args.at(0).get()];
     }
