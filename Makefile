@@ -22,6 +22,8 @@ mini-apl-tests: mini-apl-build
 	@if diff yours.txt ./expected_results/neg.txt; then echo "Success!"; else echo "Error: neg diff mismatch"; fi; echo "\n"
 	$(BIN_DIR)/$^ ./miniapl_programs/expand.mapl > yours.txt
 	@if diff yours.txt ./expected_results/expand.txt; then echo "Success!"; else echo "Error: expand diff mismatch"; fi; echo "\n"
+	$(BIN_DIR)/$^ ./miniapl_programs/concat.mapl > yours.txt
+	@if diff yours.txt ./expected_results/concat.txt; then echo "Success!"; else echo "Error: concat diff mismatch"; fi; echo "\n"
 	@rm yours.txt
 
 mini-apl-build:

@@ -363,7 +363,7 @@ Value *VariableASTNode::codegen(Function *F) {
   if (!var) {
     return nullptr;
   }
-  return Builder.CreateLoad(var->getType(), var, Name);
+  return Builder.CreateLoad(var->getType(), var);
 }
 
 Value *CallASTNode::codegen(Function *F) {
@@ -530,6 +530,57 @@ Value *CallASTNode::codegen(Function *F) {
     TypeTable[static_cast<ASTNode *>(this)] = MiniAPLArrayType{new_dims};
     return alloca;
   }
+  else if (Callee == "concat") {
+    ASTNode* a =  Args.at(0).get();
+    ASTNode* b =  Args.at(1).get();
+    int concat_dim = static_cast<NumberASTNode *>(Args.at(2).get())->Val;
+    if (!a || !b) return nullptr;
+    MiniAPLArrayType a_type = TypeTable[a];
+    MiniAPLArrayType b_type = TypeTable[b];
+    
+    std::vector<int> dims;
+    for (int i = 0; i < a_type.dimension(); i++) {
+      if (i == concat_dim) {
+        dims.push_back(a_type.dimensions[i]+b_type.dimensions[i]);
+      }
+      else {
+        dims.push_back(a_type.dimensions[i]);
+      }
+    }
+    MiniAPLArrayType new_type = MiniAPLArrayType{dims};
+
+    int n = new_type.Cardinality();
+    IRBuilder<> alloca_builder(&F->getEntryBlock(), F->getEntryBlock().begin());
+    Value *alloca = alloca_builder.CreateAlloca(intTy(32), intConst(32, n));
+
+    Value* a_vals = a->codegen(F);
+    Value* b_vals = b->codegen(F);
+    int a_idx = 0;
+    int b_idx = 0;
+    int do_a = 1;
+    int do_b = 1;
+    for (int i = new_type.dimension()-1; i >= concat_dim; i--) {
+      do_a *= a_type.dimensions[i];
+      do_b *= b_type.dimensions[i];
+    }
+    int switch_every = do_a + do_b;
+    for (int i = 0; i < n; i++) {
+      Value *element_ptr = Builder.CreateGEP(intTy(32), alloca, intConst(32, i));
+      Value *ptr;
+      if ((i % switch_every) < do_a) {
+        ptr = Builder.CreateGEP(intTy(32), a_vals, intConst(32, a_idx));
+        a_idx += 1;
+      } else {
+        ptr = Builder.CreateGEP(intTy(32), b_vals, intConst(32, b_idx));
+        b_idx += 1;
+      }
+      Value* val = Builder.CreateLoad(intTy(32), ptr);
+      Builder.CreateStore(val, element_ptr);
+    }
+
+    TypeTable[static_cast<ASTNode *>(this)] = new_type;
+    return alloca;
+  }
   return nullptr;
 }
 
@@ -638,6 +689,23 @@ void SetType(std::map<ASTNode *, MiniAPLArrayType> &Types, ASTNode *Expr) {
     } else if (Call->Callee == "expand") {
       Types[Expr] = Types[Call->Args.at(0).get()];
       Types[Expr].dimensions.push_back(static_cast<NumberASTNode *>(Call->Args.at(1).get())->Val);
+    } else if (Call->Callee == "concat") {
+      std::vector<int> dims1 = Types[Call->Args.at(0).get()].dimensions;
+      std::vector<int> dims2 = Types[Call->Args.at(1).get()].dimensions;
+      int concat_dim = static_cast<NumberASTNode *>(Call->Args.at(2).get())->Val;
+      assert(dims1.size() == dims2.size());
+      int size = dims1.size();
+      std::vector<int> dims;
+      for (int i = 0; i < size; i++) {
+        if (i == concat_dim) {
+          dims.push_back(dims1[i]+dims2[i]);
+        }
+        else {
+          assert(dims1[i] == dims2[i]);
+          dims.push_back(dims1[i]);
+        }
+      }
+      Types[Expr] = {dims};
     } else {
       Types[Expr] = Types[Call->Args.at(0).get()];
     }
